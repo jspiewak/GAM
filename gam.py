@@ -24,7 +24,7 @@ For more information, see http://code.google.com/p/google-apps-manager
 """
 
 __author__ = u'Jay Lee <jay0lee@gmail.com>'
-__version__ = u'3.32'
+__version__ = u'3.4'
 __license__ = u'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 
 import sys, os, time, datetime, random, socket, csv, platform, re, calendar, base64, hashlib
@@ -447,17 +447,17 @@ def callGAPIpages(service, function, items=u'items', nextPageToken=u'nextPageTok
       show_message = page_message
       try:
         show_message = show_message.replace(u'%%num_items%%', str(page_items))
-      except KeyError:
+      except (IndexError, KeyError):
         show_message = show_message.replace(u'%%num_items%%', '0')
       try:
         show_message = show_message.replace(u'%%total_items%%', str(total_items))
-      except KeyError:
+      except (IndexError, KeyError):
         show_message = show_message.replace(u'%%total_items%%', '0')
       if message_attribute:
         try:
           show_message = show_message.replace(u'%%first_item%%', str(this_page[items][0][message_attribute]))
           show_message = show_message.replace(u'%%last_item%%', str(this_page[items][-1][message_attribute]))
-        except KeyError:
+        except (IndexError, KeyError):
           show_message = show_message.replace(u'%%first_item%%', '')
           show_message = show_message.replace(u'%%last_item%%', '')
       restart_line()
@@ -467,7 +467,7 @@ def callGAPIpages(service, function, items=u'items', nextPageToken=u'nextPageTok
       pageToken = this_page[nextPageToken]
       if pageToken == '':
         return all_pages
-    except KeyError:
+    except (IndexError, KeyError):
       return all_pages
 
 def getAPIVer(api):
@@ -2214,6 +2214,7 @@ def downloadDriveFile(users):
   query = fileIds = None
   gdownload_format = u'openoffice'
   target_folder = getGamPath()
+  safe_filename_chars = "-_.() %s%s" % (string.ascii_letters, string.digits)
   while i < len(sys.argv):
     if sys.argv[i].lower() == u'id':
       fileIds = [sys.argv[i+1],]
@@ -2263,7 +2264,7 @@ def downloadDriveFile(users):
         if fileIds[0].find('/') != -1:
           fileIds[0] = fileIds[0][:fileIds[0].find('/')]
     if not fileIds:
-      print u'No files to delete for %s' % user
+      print u'No files to download for %s' % user
     i = 0
     for fileId in fileIds:
       extension = None
@@ -2295,7 +2296,9 @@ def downloadDriveFile(users):
             except KeyError:
               pass
             break
-      filename = u'%s/%s' % (target_folder, result[u'title'])
+      file_title = result[u'title']
+      safe_file_title = ''.join(c for c in file_title if c in safe_filename_chars)
+      filename = u'%s/%s' % (target_folder, safe_file_title)
       if extension and filename.lower()[:len(extension)] != extension:
         filename = u'%s%s' % (filename, extension)
       y = 0
@@ -2664,7 +2667,7 @@ def showSendAs(users):
     print u''
 
 def doLanguage(users):
-  language = sys.argv[4].lower()
+  language = sys.argv[4]
   emailsettings = getEmailSettingsObject()
   count = len(users)
   i = 1
@@ -3270,6 +3273,104 @@ def getVacation(users):
     except TypeError:
       pass
 
+def doCreateDomain():
+  cd = buildGAPIObject(u'directory')
+  domain_name = sys.argv[3]
+  domain_type = sys.argv[4].upper()
+  if domain_type.replace(u'_', '') in [u'ALIAS', u'MIRROR', u'DOMAINALIAS', u'ALIAS_DOMAIN']:
+    domain_type = u'DOMAIN_ALIAS'
+  elif domain_type.replace(u'_', '') in [u'SECONDARY', u'SEPARATE', u'MULTIDOMAIN', u'MULTI']:
+    domain_type = u'MULTI_DOMAIN'
+  elif domain_type.replace(u'_', '') in [u'PRIMARY', u'PRIMARYDOMAIN', u'HOME']:
+    domain_type = u'PRIMARY'
+  elif domain_type != u'UNKNOWN':
+    print u'Error: domain type should be alias, secondary, primary or unknown. Got %s' % domain_type
+    sys.exit(4)
+  body = {u'domain_name': domain_name, u'domain_type': domain_type}
+  callGAPI(service=cd.domains(), function=u'insert', customerId=customerId, body=body)
+  print u'Added domain %s' % domain_name
+
+def doDelSchema():
+  cd = buildGAPIObject(u'directory')
+  schemaKey = sys.argv[3]
+  callGAPI(service=cd.schemas(), function=u'delete', customerId=customerId, schemaKey=schemaKey)
+  print u'Deleted schema %s' % schemaKey
+
+def doCreateOrUpdateUserSchema():
+  cd = buildGAPIObject(u'directory')
+  schemaName = sys.argv[3]
+  body = {u'schemaName': schemaName, u'fields': []}
+  i = 4
+  while i < len(sys.argv):
+    if sys.argv[i] in [u'field']:
+      a_field = {u'fieldName': sys.argv[i+1]}
+      i += 2
+      while True:
+        if sys.argv[i].lower() in [u'type']:
+          a_field[u'fieldType'] = sys.argv[i+1].upper()
+          if a_field[u'fieldType'] not in [u'BOOL', u'DOUBLE', u'EMAIL', u'INT64', u'PHONE', u'STRING']:
+            print 'Error: type must be bool, double, email, int64, phone or string. Got %s' % a_field[u'fieldType']
+            sys.exit(3)
+          i += 2
+        elif sys.argv[i].lower() in [u'multivalued']:
+          a_field[u'multiValued'] = True
+          i += 1
+        elif sys.argv[i].lower() in [u'indexed']:
+          a_field[u'indexed'] = True
+          i += 1
+        elif sys.argv[i].lower() in [u'restricted']:
+          a_field[u'readAccessType'] = u'ADMINS_AND_SELF'
+          i += 1
+        elif sys.argv[i].lower() in [u'range']:
+          a_field[u'numericIndexingSpec'] = {u'minValue': sys.argv[i+1], u'maxValue': sys.argv[i+2]}
+          i += 3
+        elif sys.argv[i].lower() in [u'endfield']:
+          body[u'fields'].append(a_field)
+          i += 1
+          break
+        else:
+          print 'Error: %s is not a valid argument to gam create schema' % sys.argv[i]
+          sys.exit(4)
+  if sys.argv[1].lower() == u'create':
+    result = callGAPI(service=cd.schemas(), function=u'insert', customerId=customerId, body=body)
+    print 'Created user schema %s' % result[u'schemaName']
+  elif sys.argv[1].lower() == u'update':
+    result = callGAPI(service=cd.schemas(), function=u'update', customerId=customerId, body=body, schemaKey=schemaName)
+    print 'Updated user schema %s' % result[u'schemaName']
+
+def doPrintUserSchemas():
+  cd = buildGAPIObject(u'directory')
+  schemas = callGAPI(service=cd.schemas(), function=u'list', customerId=customerId)
+  for schema in schemas[u'schemas']:
+    print u'Schema: %s' % schema[u'schemaName']
+    for a_key in schema.keys():
+      if a_key not in [u'schemaName', u'fields', u'etag', u'kind']:
+        print '%s: %s' % (a_key, schema[a_key])
+    print
+    for field in schema[u'fields']:
+      print u' Field: %s' % field[u'fieldName']
+      for a_key in field.keys():
+        if a_key not in [u'fieldName', u'kind', u'etag']:
+          print '  %s: %s' % (a_key, field[a_key])
+      print
+    print
+
+def doGetUserSchema():
+  cd = buildGAPIObject(u'directory')
+  schemaKey = sys.argv[3]
+  schema = callGAPI(service=cd.schemas(), function=u'get', customerId=customerId, schemaKey=schemaKey)
+  print u'Schema: %s' % schema[u'schemaName']
+  for a_key in schema.keys():
+    if a_key not in [u'schemaName', u'fields', u'etag', u'kind']:
+      print '%s: %s' % (a_key, schema[a_key])
+  print
+  for field in schema[u'fields']:
+    print u' Field: %s' % field[u'fieldName']
+    for a_key in field.keys():
+      if a_key not in [u'fieldName', u'kind', u'etag']:
+        print '  %s: %s' % (a_key, field[a_key])
+    print
+
 def doCreateUser():
   cd = buildGAPIObject(u'directory')
   body = dict()
@@ -3567,9 +3668,33 @@ def doCreateUser():
       except KeyError:
         body[u'externalIds'] = [externalid,]
       i += 1
+#    else:
+#      showUsage()
+#      sys.exit(2)
     else:
-      showUsage()
-      sys.exit(2)
+      if u'customSchemas' not in body:
+        body[u'customSchemas'] = {}
+      try:
+        (schemaName, fieldName) = sys.argv[i].split(u'.')
+      except ValueError:
+        print 'Error: %s is not a valid create user argument or custom schema name.' % sys.argv[i]
+        sys.exit(3)
+      field_value = sys.argv[i+1]
+      is_multivalue = False
+      if field_value.lower() in [u'multivalue', u'multivalued', u'value']:
+        is_multivalue = True
+        field_value = sys.argv[i+2]
+      if schemaName not in body[u'customSchemas']:
+        body[u'customSchemas'][schemaName] = {}
+      if is_multivalue:
+        if fieldName not in body[u'customSchemas'][schemaName]:
+          body[u'customSchemas'][schemaName][fieldName] = []
+        body[u'customSchemas'][schemaName][fieldName].append({u'value': field_value})
+      else:
+        body[u'customSchemas'][schemaName][fieldName] = field_value
+      i += 2
+      if is_multivalue:
+        i += 1
   if not gotFirstName:
     body[u'name'][u'givenName'] = u'Unknown'
   if not gotLastName:
@@ -4039,11 +4164,36 @@ def doUpdateUser(users):
       except KeyError:
         body[u'externalIds'] = [externalid,]
       i += 1
+#    else:
+#      showUsage()
+#      print u''
+#      print u'Error: didn\'t expect %s command at position %s' % (sys.argv[i], i)
+#      sys.exit(2)
     else:
-      showUsage()
-      print u''
-      print u'Error: didn\'t expect %s command at position %s' % (sys.argv[i], i)
-      sys.exit(2)
+      do_update_user = True
+      if u'customSchemas' not in body:
+        body[u'customSchemas'] = {}
+      try:
+        (schemaName, fieldName) = sys.argv[i].split(u'.')
+      except ValueError:
+        print u'Error: %s is not a valid user update argument or custom schema name' % sys.argv[i]
+        sys.exit(3)
+      field_value = sys.argv[i+1]
+      is_multivalue = False
+      if field_value.lower() == u'multivalue':
+        is_multivalue = True
+        field_value = sys.argv[i+2]
+      if schemaName not in body[u'customSchemas']:
+        body[u'customSchemas'][schemaName] = {}
+      if is_multivalue:
+        if fieldName not in body[u'customSchemas'][schemaName]:
+          body[u'customSchemas'][schemaName][fieldName] = []
+        body[u'customSchemas'][schemaName][fieldName].append({u'value': field_value})
+      else:
+        body[u'customSchemas'][schemaName][fieldName] = field_value
+      i += 2
+      if is_multivalue:
+        i += 1
   if gotPassword and not (isSHA1 or isMD5 or isCrypt or nohash):
     body[u'password'] = gen_sha512_hash(body[u'password'])
     body[u'hashFunction'] = u'crypt'
@@ -4472,7 +4622,9 @@ def doGetUserInfo(user_email=None):
     user_email = user_email[4:]
   elif user_email.find(u'@') == -1:
     user_email = u'%s@%s' % (user_email, domain)
-  getAliases = getGroups = getLicenses = True
+  getSchemas = getAliases = getGroups = getLicenses = True
+  projection = u'full'
+  customFieldMask = viewType = None
   i = 4
   while i < len(sys.argv):
     if sys.argv[i].lower() == u'noaliases':
@@ -4484,10 +4636,23 @@ def doGetUserInfo(user_email=None):
     elif sys.argv[i].lower() == u'nolicenses':
       getLicenses = False
       i += 1
+    elif sys.argv[i].lower() == u'noschemas':
+      getSchemas = False
+      projection = u'basic'
+      i += 1
+    elif sys.argv[i].lower() == u'schemas':
+      getSchemas = True
+      projection = u'custom'
+      customFieldMask = sys.argv[i+1]
+      i += 2
+    elif sys.argv[i].lower() == u'userview':
+      viewType = u'domain_public'
+      getGroups = getLicenses = False
+      i += 1
     else:
       print u'%s is not a valid argument for gam info user' % sys.argv[i]
       sys.exit(3)
-  user = callGAPI(service=cd.users(), function=u'get', userKey=user_email)
+  user = callGAPI(service=cd.users(), function=u'get', userKey=user_email, projection=projection, customFieldMask=customFieldMask, viewType=viewType)
   print u'User: %s' % user[u'primaryEmail']
   if u'name' in user and u'givenName' in user[u'name']:
     print u'First Name: %s' % user[u'name'][u'givenName']
@@ -4586,6 +4751,19 @@ def doGetUserInfo(user_email=None):
         else:
           print u' %s: %s' % (key, id[key])
       print u''
+  if getSchemas:
+    print u'Custom Schemas:'
+    if u'customSchemas' in user:
+      for schema in user[u'customSchemas']:
+        print u' Schema: %s' % schema
+        for field in user[u'customSchemas'][schema]:
+          if type(user[u'customSchemas'][schema][field]) is list:
+            print '  %s:' % field
+            for an_item in user[u'customSchemas'][schema][field]:
+              print '   %s' % an_item[u'value']
+          else:
+            print u'  %s: %s' % (field, user[u'customSchemas'][schema][field])
+        print
   if getAliases:
     if u'aliases' in user:
       print u'Email Aliases:'
@@ -4860,28 +5038,34 @@ def doSiteVerifyAttempt():
     print u'Method:  %s' % verify_data[u'method']
     print u'Token:      %s' % verify_data[u'token']
     if verify_data[u'method'] == u'DNS_CNAME':
-      import dns.resolver
-      resolver = dns.resolver.Resolver()
-      resolver.nameservers = nameservers=[u'8.8.8.8', u'8.8.4.4']
-      cname_token = verify_data[u'token']
-      cname_list = cname_token.split(u' ')
-      cname_subdomain = cname_list[0]
       try:
-        answers = resolver.query(u'%s.%s' % (cname_subdomain, a_domain), u'A')
-        for answer in answers:
-          print u'DNS Record: %s' % answer
-      except dns.resolver.NXDOMAIN:
-        print u'ERROR: No such domain found in DNS!'
+        import dns.resolver
+        resolver = dns.resolver.Resolver()
+        resolver.nameservers = nameservers=[u'8.8.8.8', u'8.8.4.4']
+        cname_token = verify_data[u'token']
+        cname_list = cname_token.split(u' ')
+        cname_subdomain = cname_list[0]
+        try:
+          answers = resolver.query(u'%s.%s' % (cname_subdomain, a_domain), u'A')
+          for answer in answers:
+            print u'DNS Record: %s' % answer
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+          print u'ERROR: No such domain found in DNS!'
+      except ImportError:
+        pass
     elif verify_data[u'method'] == u'DNS_TXT':
-      import dns.resolver
-      resolver = dns.resolver.Resolver()
-      resolver.nameservers = nameservers=[u'8.8.8.8', u'8.8.4.4']
       try:
-        answers = resolver.query(a_domain, u'TXT')
-        for answer in answers:
-          print u'DNS Record: %s' % str(answer).replace(u'"', u'')
-      except dns.resolver.NXDOMAIN:
-        print u'ERROR: no such domain found in DNS!'
+        import dns.resolver
+        resolver = dns.resolver.Resolver()
+        resolver.nameservers = nameservers=[u'8.8.8.8', u'8.8.4.4']
+        try:
+          answers = resolver.query(a_domain, u'TXT')
+          for answer in answers:
+            print u'DNS Record: %s' % str(answer).replace(u'"', u'')
+        except dns.resolver.NXDOMAIN:
+          print u'ERROR: no such domain found in DNS!'
+      except ImportError:
+        pass
     return
   print u'SUCCESS!'
   print u'Verified:  %s' % verify_result[u'site'][u'identifier']
@@ -5286,7 +5470,8 @@ def doGetDomainInfo():
   if customerId != u'my_customer':
     customer_id = customerId
   else:
-    customer_id = callGAPI(service=cd.users(), function=u'list', fields=u'users(customerId)', customer=customerId, maxResults=1)[u'users'][0][u'customerId']
+    result = callGAPI(service=cd.users(), function=u'list', fields=u'users(customerId)', customer=customerId, maxResults=1, sortOrder=u'DESCENDING')
+    customer_id = result[u'users'][0][u'customerId']
   print u'Customer ID: %s' % customer_id
   default_language = callGAPI(service=adm.defaultLanguage(), function=u'get', domainName=domain)
   print u'Default Language: %s' % default_language[u'entry'][u'apps$property'][0][u'value']
@@ -5523,14 +5708,24 @@ def doPrintUsers():
   customer = customerId
   domain = None
   query = None
-  getGroupFeed = getLicenseFeed = False
+  projection = u'basic'
+  customFieldMask = None
+  getGroupFeed = getLicenseFeed = email_parts = False
   todrive = False
-  deleted_only = orderBy = sortOrder = None
+  viewType = deleted_only = orderBy = sortOrder = None
   i = 3
   while i < len(sys.argv):
     if sys.argv[i].lower() == u'allfields':
       fields = None
       i += 1
+    elif sys.argv[i].lower() == u'custom':
+      user_fields.append(u'customSchemas')
+      if sys.argv[i+1].lower() == u'all':
+        projection = u'full'
+      else:
+        projection = u'custom'
+        customFieldMask = sys.argv[i+1]
+      i += 2
     elif sys.argv[i].lower() == u'todrive':
       todrive = True
       i += 1
@@ -5547,6 +5742,9 @@ def doPrintUsers():
       elif orderBy.lower() in [u'givenname', u'firstname']:
         orderBy= u'givenName'
       i += 2
+    elif sys.argv[i].lower() == u'userview':
+      viewType = u'domain_public'
+      i += 1
     elif sys.argv[i].lower() in [u'ascending', u'descending']:
       sortOrder = sys.argv[i].upper()
       i += 1
@@ -5631,7 +5829,7 @@ def doPrintUsers():
     fields = u'nextPageToken,users(%s)' % u','.join(user_fields)
   sys.stderr.write(u"Getting all users in Google Apps account (may take some time on a large account)...\n")
   page_message = u'Got %%total_items%% users: %%first_item%% - %%last_item%%\n'
-  all_users = callGAPIpages(service=cd.users(), function=u'list', items=u'users', page_message=page_message, message_attribute=u'primaryEmail', customer=customer, domain=domain, fields=fields, showDeleted=deleted_only, maxResults=500, orderBy=orderBy, sortOrder=sortOrder, query=query)
+  all_users = callGAPIpages(service=cd.users(), function=u'list', items=u'users', page_message=page_message, message_attribute=u'primaryEmail', customer=customer, domain=domain, fields=fields, showDeleted=deleted_only, maxResults=500, orderBy=orderBy, sortOrder=sortOrder, viewType=viewType, query=query, projection=projection, customFieldMask=customFieldMask)
   titles = []
   attributes = []
   for user in all_users:
@@ -6829,14 +7027,14 @@ found at:
 
    %s
 
-with information from the APIs Console <https://code.google.com/apis/console>.
+with information from the APIs Console <https://cloud.google.com/console>.
 
 See https://code.google.com/p/google-apps-manager/wiki/CreatingClientSecretsFile
 for instructions.
 
 """ % CLIENT_SECRETS
 
-  selected_scopes = [u'*'] * 19
+  selected_scopes = [u'*'] * 20
   menu = u'''Select the authorized scopes for this token. Include a 'r' to grant read-only
 access or an 'a' to grant action-only access.
 
@@ -6859,10 +7057,11 @@ access or an 'a' to grant action-only access.
 [%s] 16)  Notifications Directory API
 [%s] 17)  Site Verification API
 (%s) 18)  IMAP/SMTP Access (send notifications to admin)
+(%s) 19)  User Schemas (supports read-only)
 
-     19)  Select all scopes
-     20)  Unselect all scopes
-     21)  Continue
+     20)  Select all scopes
+     21)  Unselect all scopes
+     22)  Continue
 '''
   os.system([u'clear', u'cls'][os.name == u'nt'])
   while True:
@@ -6870,7 +7069,7 @@ access or an 'a' to grant action-only access.
     try:
       if selection.lower().find(u'r') != -1:
         selection = int(selection.lower().replace(u'r', u''))
-        if selection not in [0, 1, 2, 3, 4, 10]:
+        if selection not in [0, 1, 2, 3, 4, 10, 19]:
           os.system([u'clear', u'cls'][os.name == u'nt'])
           print u'THAT SCOPE DOES NOT SUPPORT READ-ONLY MODE!\n'
           continue
@@ -6882,18 +7081,18 @@ access or an 'a' to grant action-only access.
           print u'THAT SCOPE DOES NOT SUPPORT ACTION-ONLY MODE!\n'
           continue
         selected_scopes[selection] = u'A'
-      elif int(selection) > -1 and int(selection) <= 18:
+      elif int(selection) > -1 and int(selection) <= 19:
         if selected_scopes[int(selection)] == u' ':
           selected_scopes[int(selection)] = u'*'
         else:
           selected_scopes[int(selection)] = u' '
-      elif selection == u'19':
-        for i in range(0, len(selected_scopes)):
-          selected_scopes[i] = u'*'
       elif selection == u'20':
         for i in range(0, len(selected_scopes)):
-           selected_scopes[i] = u' '
+          selected_scopes[i] = u'*'
       elif selection == u'21':
+        for i in range(0, len(selected_scopes)):
+           selected_scopes[i] = u' '
+      elif selection == u'22':
         at_least_one = False
         for i in range(0, len(selected_scopes)):
           if selected_scopes[i] in [u'*', u'R', u'A']:
@@ -6932,7 +7131,8 @@ access or an 'a' to grant action-only access.
                      u'https://www.googleapis.com/auth/admin.directory.user.security',    # User Security Directory API
                      u'https://www.googleapis.com/auth/admin.directory.notifications',    # Notifications Directory API
                      u'https://www.googleapis.com/auth/siteverification',                 # Site Verification API
-                     u'https://mail.google.com/']                                         # IMAP/SMTP authentication for admin notifications
+                     u'https://mail.google.com/',                                         # IMAP/SMTP authentication for admin notifications
+                     u'https://www.googleapis.com/auth/admin.directory.userschema']       # Customer User Schema
   if incremental_auth:
     scopes = []
   else:
@@ -7070,12 +7270,14 @@ try:
       doCreateGroup()
     elif sys.argv[2].lower() in [u'nickname', u'alias']:
       doCreateAlias()
-    elif sys.argv[2].lower() == u'org':
+    elif sys.argv[2].lower() in [u'org', 'ou']:
       doCreateOrg()
     elif sys.argv[2].lower() == u'resource':
       doCreateResource()
     elif sys.argv[2].lower() in [u'verify', u'verification']:
       doSiteVerifyShow()
+    elif sys.argv[2].lower() in [u'schema']:
+      doCreateOrUpdateUserSchema()
     else:
       print u'Error: invalid argument to "gam create..."'
       sys.exit(2)
@@ -7101,6 +7303,8 @@ try:
       doUpdateNotification()
     elif sys.argv[2].lower() in [u'verify', u'verification']:
       doSiteVerifyAttempt()
+    elif sys.argv[2].lower() in [u'schema', u'schemas']:
+      doCreateOrUpdateUserSchema()
     else:
       showUsage()
       print u'Error: invalid argument to "gam update..."'
@@ -7127,6 +7331,8 @@ try:
       doGetNotifications()
     elif sys.argv[2].lower() in [u'verify', u'verification']:
       doGetSiteVerifications()
+    elif sys.argv[2].lower() in [u'schema', u'schemas']:
+      doGetUserSchema()
     else:
       print u'Error: invalid argument to "gam info..."'
       sys.exit(2)
@@ -7148,6 +7354,8 @@ try:
       doDeleteNotification()
     elif sys.argv[2].lower() in [u'verify', u'verification']:
       doDelSiteVerify()
+    elif sys.argv[2].lower() in [u'schema', u'schemas']:
+      doDelSchema()
     else:
       print u'Error: invalid argument to "gam delete"'
       sys.exit(2)
@@ -7225,6 +7433,8 @@ try:
       doPrintLicenses()
     elif sys.argv[2].lower() in [u'token', u'tokens']:
       doPrintTokens()
+    elif sys.argv[2].lower() in [u'schema', u'schemas']:
+      doPrintUserSchemas()
     else:
       print u'Error: invalid argument to "gam print..."'
       sys.exit(2)
