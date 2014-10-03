@@ -24,7 +24,7 @@ For more information, see http://code.google.com/p/google-apps-manager
 """
 
 __author__ = u'Jay Lee <jay0lee@gmail.com>'
-__version__ = u'3.4'
+__version__ = u'3.41'
 __license__ = u'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 
 import sys, os, time, datetime, random, socket, csv, platform, re, calendar, base64, hashlib
@@ -695,7 +695,10 @@ def geturl(url, dst):
   u = urllib2.urlopen(url)
   f = open(dst, 'wb')
   meta = u.info()
-  file_size = int(meta.getheaders(u'Content-Length')[0])
+  try:
+    file_size = int(meta.getheaders(u'Content-Length')[0])
+  except IndexError:
+    file_size = -1
   file_size_dl = 0
   block_sz = 8192
   while True:
@@ -704,8 +707,11 @@ def geturl(url, dst):
         break
     file_size_dl += len(buffer)
     f.write(buffer)
-    status = r"%10d  [%3.2f%%]" % (file_size_dl, file_size_dl * 100. / file_size)
-    status = status + chr(8)*(len(status)+1)
+    if file_size != -1:
+      status = r"%10d  [%3.2f%%]" % (file_size_dl, file_size_dl * 100. / file_size)
+    else:
+      status = r"%10d [unknown size]" % (file_size_dl)
+    status = status + chr(8)*(len(status)+1) 
     print status,
   f.close()
 
@@ -2534,9 +2540,9 @@ def doLicense(users, operation):
     if user.find(u'@') == -1:
       user = u'%s@%s' % (user, domain)
     if operation == u'delete':
-      callGAPI(service=lic.licenseAssignments(), function=operation, productId=productId, skuId=skuId, userId=user)
+      callGAPI(service=lic.licenseAssignments(), function=operation, soft_errors=True, productId=productId, skuId=skuId, userId=user)
     elif operation == u'insert':
-      callGAPI(service=lic.licenseAssignments(), function=operation, productId=productId, skuId=skuId, body={u'userId': user})
+      callGAPI(service=lic.licenseAssignments(), function=operation, soft_errors=True, productId=productId, skuId=skuId, body={u'userId': user})
     elif operation == u'patch':
       try:
         old_sku = sys.argv[6]
@@ -2546,7 +2552,7 @@ def doLicense(users, operation):
         print u'You need to specify the user\'s old SKU as the last argument'
         sys.exit(5)
       old_product, old_sku = getProductAndSKU(old_sku)
-      callGAPI(service=lic.licenseAssignments(), function=operation, productId=productId, skuId=old_sku, userId=user, body={u'skuId': skuId})
+      callGAPI(service=lic.licenseAssignments(), function=operation, soft_errors=True, productId=productId, skuId=old_sku, userId=user, body={u'skuId': skuId})
 
 def doPop(users):
   if sys.argv[4].lower() in true_values:
@@ -5470,7 +5476,7 @@ def doGetDomainInfo():
   if customerId != u'my_customer':
     customer_id = customerId
   else:
-    result = callGAPI(service=cd.users(), function=u'list', fields=u'users(customerId)', customer=customerId, maxResults=1, sortOrder=u'DESCENDING')
+    result = callGAPI(service=cd.users(), function=u'list', fields=u'users(customerId)', customer=customerId, sortOrder=u'DESCENDING')
     customer_id = result[u'users'][0][u'customerId']
   print u'Customer ID: %s' % customer_id
   default_language = callGAPI(service=adm.defaultLanguage(), function=u'get', domainName=domain)
