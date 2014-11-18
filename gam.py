@@ -493,6 +493,8 @@ def getAPIVer(api):
     return u'v1'
   elif api == u'gmail':
     return u'v1'
+  elif api == u'appsactivity':
+    return u'v1'
   return u'v1'
 
 def getAPIScope(api):
@@ -508,6 +510,9 @@ def getAPIScope(api):
             u'https://www.googleapis.com/auth/plus.circles.write']
   elif api == u'gmail':
     return [u'https://mail.google.com/']
+  elif api == u'appsactivity':
+    return [u'https://www.googleapis.com/auth/activity',
+            u'https://www.googleapis.com/auth/drive']
 
 def buildGAPIObject(api):
   global domain, customerId, prettyPrint
@@ -1473,7 +1478,7 @@ def doProfile(users):
     elif user.find(u'@') == -1:
       user = u'%s@%s' % (user, domain)
     print u'Setting Profile Sharing to %s for %s (%s of %s)' % (body[u'includeInGlobalAddressList'], user, i, count)
-    callGAPI(service=cd.users(), function=u'patch', userKey=user, body=body)
+    callGAPI(service=cd.users(), function=u'patch', soft_errors=True, userKey=user, body=body)
     i += 1
 
 def showProfile(users):
@@ -1646,6 +1651,38 @@ def showDriveSettings(users):
     headers[title] = title
   drive_attr.insert(0, headers)
   output_csv(drive_attr, titles, u'User Drive Settings', todrive)
+
+def doDriveActivity(users):
+  drive_ancestorId = u'root'
+  drive_fileId = None
+  todrive = False
+  i = 5
+  while i < len(sys.argv):
+    activity_object = sys.argv[i].lower().replace(u'_', '')
+    if activity_object == u'fileid':
+      drive_fileId = sys.argv[i+1]
+      drive_ancestorId = None
+      i += 2
+    elif activity_object == u'folderid':
+      drive_ancestorId = sys.argv[i+1]
+      i += 2
+    elif activity_object == u'todrive':
+      todrive = True
+      i += 1
+    else:
+      print u'Error: %s is not a valid argument to gam <users> show driveactivity'
+      sys.exit(3)
+  activity_attributes = [{},]
+  for user in users:
+    activity = buildGAPIServiceObject(u'appsactivity', user)
+    page_message = u'Retrieved %%%%total_items%%%% activities for %s' % user
+    feed = callGAPIpages(service=activity.activities(), function=u'list', items=u'activities', page_message=page_message, source=u'drive.google.com', userId=u'me', drive_ancestorId=drive_ancestorId, pageSize=100)
+    for item in feed:
+      activity_attributes.append(flatten_json(item))
+      for an_item in activity_attributes[-1].keys():
+        if an_item not in activity_attributes[0]:
+          activity_attributes[0][an_item] = an_item
+  output_csv(activity_attributes, activity_attributes[0], u'Drive Activity', todrive)
 
 def showDriveFileACL(users):
   fileId = sys.argv[5]
@@ -3471,7 +3508,7 @@ def doCreateUser():
       i += 2
     elif sys.argv[i].lower() in [u'org', u'ou']:
       org = sys.argv[i+1]
-      if org[1] != u'/':
+      if org[0] != u'/':
         org = u'/%s' % org
       body[u'orgUnitPath'] = org
       i += 2
@@ -4228,11 +4265,13 @@ def doRemoveUsersAliases(users):
     user_aliases = callGAPI(service=cd.users(), function=u'get', userKey=user, fields=u'aliases,id,primaryEmail')
     user_id = user_aliases[u'id']
     user_primary = user_aliases[u'primaryEmail']
-    print u'%s has %s aliases' % (user_primary, len(user_aliases[u'aliases']))
     if u'aliases' in user_aliases:
+      print u'%s has %s aliases' % (user_primary, len(user_aliases[u'aliases']))
       for an_alias in user_aliases[u'aliases']:
         print u' removing alias %s for %s...' % (an_alias, user_aliases[u'primaryEmail'])
         callGAPI(service=cd.users().aliases(), function=u'delete', userKey=user_aliases[u'id'], alias=an_alias)
+    else:
+      print u'%s has no aliases' % user_primary
 
 def doRemoveUsersGroups(users):
   cd = buildGAPIObject(u'directory')
@@ -5230,7 +5269,11 @@ def doGenBackupCodes(users):
 def doDelBackupCodes(users):
   cd = buildGAPIObject(u'directory')
   for user in users:
-    codes = callGAPI(service=cd.verificationCodes(), function=u'invalidate', soft_errors=True, userKey=user)
+    try:
+      codes = callGAPI(service=cd.verificationCodes(), function=u'invalidate', soft_errors=True, throw_reasons=[u'invalid',], userKey=user)
+    except apiclient.errors.HttpError:
+      print u'No 2SV backup codes for %s' % user
+      continue
     print u'2SV backup codes for %s invalidated' % user
 
 def commonClientIds(clientId):
@@ -5303,7 +5346,10 @@ def doDeprovUser(users):
     except KeyError:
       print u'No ASPs'
     print u'Invalidating 2SV Backup Codes for %s' % user
-    codes = callGAPI(service=cd.verificationCodes(), function=u'invalidate', soft_errors=True, userKey=user)
+    try:
+      codes = callGAPI(service=cd.verificationCodes(), function=u'invalidate', soft_errors=True, throw_reasons=[u'invalid'], userKey=user)
+    except apiclient.errors.HttpError:
+      print u'No 2SV Backup Codes'
     print u'Getting tokens for %s...' % user
     tokens = callGAPI(service=cd.tokens(), function=u'list', userKey=user, fields=u'items/clientId')
     i = 1
@@ -5827,18 +5873,29 @@ def doPrintUsers():
     elif sys.argv[i].lower() in [u'license', u'licenses']:
       getLicenseFeed = True
       i += 1
+    elif sys.argv[i].lower() in [u'emailpart', u'emailparts', u'username']:
+      email_parts = True
+      i += 1
     else:
       showUsage()
-      exit(5)
+      sys.exit(5)
   if fields != None:
     user_fields = set(user_fields)
     fields = u'nextPageToken,users(%s)' % u','.join(user_fields)
   sys.stderr.write(u"Getting all users in Google Apps account (may take some time on a large account)...\n")
   page_message = u'Got %%total_items%% users: %%first_item%% - %%last_item%%\n'
   all_users = callGAPIpages(service=cd.users(), function=u'list', items=u'users', page_message=page_message, message_attribute=u'primaryEmail', customer=customer, domain=domain, fields=fields, showDeleted=deleted_only, maxResults=500, orderBy=orderBy, sortOrder=sortOrder, viewType=viewType, query=query, projection=projection, customFieldMask=customFieldMask)
-  titles = []
+  titles = [u'primaryEmail',]
   attributes = []
   for user in all_users:
+    if email_parts:
+      try:
+        user_email = user[u'primaryEmail']
+        if user_email.find(u'@') != -1:
+          user[u'primaryEmailLocal'] = user_email[:user_email.find(u'@')]
+          user[u'primaryEmailDomain'] = user_email[user_email.find(u'@')+1:]
+      except KeyError:
+        pass
     attributes.append(flatten_json(user))
     for item in attributes[-1].keys():
       if item not in titles:
@@ -7532,6 +7589,8 @@ try:
       doGetASPs(users)
     elif readWhat in [u'token', u'tokens', u'oauth', u'3lo']:
       doGetTokens(users)
+    elif readWhat in [u'driveactivity']:
+      doDriveActivity(users)
     else:
       print u'Error: invalid argument to "gam <users> show..."'
       sys.exit(2)
