@@ -19,35 +19,35 @@
 u"""Dito GAM is a command line tool which allows Administrators to control their Google Apps domain and accounts.
 
 With GAM you can programatically create users, turn on/off services for users like POP and Forwarding and much more.
-For more information, see http://code.google.com/p/google-apps-manager
+For more information, see http://git.io/gam
 
 """
 
 __author__ = u'Jay Lee <jay0lee@gmail.com>'
-__version__ = u'3.41'
+__version__ = u'3.42'
 __license__ = u'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 
-import sys, os, time, datetime, random, socket, csv, platform, re, calendar, base64, hashlib
+import sys, os, time, datetime, random, socket, csv, platform, re, calendar, base64, hashlib, string
 
-try:
-  import json
-except ImportError:
-  import simplejson as json
-
+import json
 import httplib2
-import apiclient
-import apiclient.discovery
-import apiclient.errors
-import apiclient.http
+import googleapiclient
+import googleapiclient.discovery
+import googleapiclient.errors
+import googleapiclient.http
 import oauth2client.client
 import oauth2client.file
 import oauth2client.tools
 import uritemplate
 
-global true_values, false_values, prettyPrint, customerId, domain
+global true_values, false_values, prettyPrint, customerId, domain, usergroup_types
 true_values = [u'on', u'yes', u'enabled', u'true', u'1']
 false_values = [u'off', u'no', u'disabled', u'false', u'0']
-  
+usergroup_types = [u'user', u'users', u'group', u'ou', u'org',
+                   u'ou_and_children', u'ou_and_child', u'query',
+                   u'license', u'licenses', u'file', u'all',
+                   u'cros']
+
 def convertUTF8(data):
     import collections
     if isinstance(data, str):
@@ -128,7 +128,7 @@ Usage: gam [OPTIONS]...
 
 Dito GAM. Retrieve or set Google Apps domain,
 user, group and alias settings. Exhaustive list of commands
-can be found at: http://code.google.com/p/google-apps-manager/wiki
+can be found at: https://github.com/jay0lee/GAM/wiki 
 
 Examples:
 gam info domain
@@ -152,7 +152,7 @@ def getGamPath():
 def doGAMVersion():
   import struct
   print u'Dito GAM %s - http://git.io/gam\n%s\nPython %s.%s.%s %s-bit %s\ngoogle-api-python-client %s\n%s %s\nPath: %s' % (__version__, __author__,
-                   sys.version_info[0], sys.version_info[1], sys.version_info[2], struct.calcsize('P')*8, sys.version_info[3], apiclient.__version__,
+                   sys.version_info[0], sys.version_info[1], sys.version_info[2], struct.calcsize('P')*8, sys.version_info[3], googleapiclient.__version__,
                    platform.platform(), platform.machine(), getGamPath())
 
 def doGAMCheckForUpdates():
@@ -188,7 +188,7 @@ def doGAMCheckForUpdates():
     visit_gam = raw_input(u"\n\nHit Y to visit the GAM website and download the latest release. Hit Enter to just continue with this boring old version. GAM won't bother you with this announcemnt for 1 week or you can create a file named noupdatecheck.txt in the same location as gam.py or gam.exe and GAM won't ever check for updates: ")
     if visit_gam.lower() == u'y':
       import webbrowser
-      webbrowser.open(u'http://google-apps-manager.googlecode.com')
+      webbrowser.open(u'https://github.com/jay0lee/GAM/releases')
       print u'GAM is now exiting so that you can overwrite this old version with the latest release'
       sys.exit(0)
     f = open(getGamPath()+u'lastupdatecheck.txt', 'w')
@@ -372,7 +372,7 @@ def callGAPI(service, function, silent_errors=False, soft_errors=False, throw_re
   for n in range(1, retries+1):
     try:
       return method(prettyPrint=prettyPrint, **kwargs).execute()
-    except apiclient.errors.HttpError, e:
+    except googleapiclient.errors.HttpError, e:
       try:
         error = json.loads(e.content)
       except ValueError:
@@ -398,17 +398,6 @@ def callGAPI(service, function, silent_errors=False, soft_errors=False, throw_re
         time.sleep(wait_on_fail)
         if n > 3: sys.stderr.write(u'attempt %s/%s\n' % (n+1, retries))
         continue
-      '''if reason == 'insufficientPermissions':
-        oauth2file = getGamPath()+'oauth2.txt'
-        try:
-          oauth2file = getGamPath()+os.environ['OAUTHFILE']
-        except KeyError:
-          pass
-        doRequestOAuth(incremental_auth=True)
-        storage = oauth2client.file.Storage(oauth2file)
-        credentials = storage.get()
-        service._http.request.credentials.access_token = credentials.access_token
-        continue'''
       sys.stderr.write(u'Error %s: %s - %s\n\n' % (http_status, message, reason))
       if soft_errors:
         if n != 1:
@@ -546,14 +535,14 @@ def buildGAPIObject(api):
   if api in [u'directory', u'reports']:
     api = u'admin'
   try:
-    service = apiclient.discovery.build(api, version, http=http)
-  except apiclient.errors.UnknownApiNameOrVersion:
+    service = googleapiclient.discovery.build(api, version, http=http)
+  except googleapiclient.errors.UnknownApiNameOrVersion:
     disc_file = getGamPath()+u'%s-%s.json' % (api, version)
     if os.path.isfile(disc_file):
       f = file(disc_file, 'rb')
       discovery = f.read()
       f.close()
-      service = apiclient.discovery.build_from_document(discovery, base=u'https://www.googleapis.com', http=http)
+      service = googleapiclient.discovery.build_from_document(discovery, base=u'https://www.googleapis.com', http=http)
     else:
       raise
   except httplib2.CertificateValidationUnsupported:
@@ -572,7 +561,7 @@ def buildGAPIObject(api):
     customerId = u'my_customer'
   return service
 
-def buildGAPIServiceObject(api, act_as=None):
+def buildGAPIServiceObject(api, act_as=None, soft_errors=False):
   global prettyPrint
   oauth2servicefile = getGamPath()+u'oauth2service'
   try:
@@ -583,18 +572,18 @@ def buildGAPIServiceObject(api, act_as=None):
   oauth2servicefilep12 = u'%s.p12' % oauth2servicefile
   try:
     json_string = open(oauth2servicefilejson).read()
-    json_data = json.loads(json_string)
-    try:
-      SERVICE_ACCOUNT_EMAIL = json_data[u'web'][u'client_email']
-      SERVICE_ACCOUNT_CLIENT_ID = json_data[u'web'][u'client_id']
-      f = file(oauth2servicefilep12, 'rb')
-      key = f.read()
-      f.close()
-    except IOError, e:
-      print u'Error: %s' % e
-      print u''
-      print u'Please follow the instructions at:\n\nhttps://code.google.com/p/google-apps-manager/wiki/GAM3OAuthServiceAccountSetup\n\nto setup a Service Account'
-      sys.exit(6)
+  except IOError, e:
+    print u'Error: %s' % e
+    print u''
+    print u'Please follow the instructions at:\n\nhttps://github.com/jay0lee/GAM/wiki/CreatingClientSecretsFile#creating-your-own-oauth2servicejson\n\nto setup a Service Account'
+    sys.exit(6)
+  json_data = json.loads(json_string)
+  try:
+    SERVICE_ACCOUNT_EMAIL = json_data[u'web'][u'client_email']
+    SERVICE_ACCOUNT_CLIENT_ID = json_data[u'web'][u'client_id']
+    f = file(oauth2servicefilep12, 'rb')
+    key = f.read()
+    f.close()
   except KeyError:
     # new format with config and data in the .json file...
     SERVICE_ACCOUNT_EMAIL = json_data[u'client_email']
@@ -623,13 +612,15 @@ def buildGAPIServiceObject(api, act_as=None):
   http = credentials.authorize(http)
   version = getAPIVer(api)
   try:
-    return apiclient.discovery.build(api, version, http=http)
+    return googleapiclient.discovery.build(api, version, http=http)
   except oauth2client.client.AccessTokenRefreshError, e:
     if e.message == u'access_denied':
       print u'Error: Access Denied. Please make sure the Client Name:\n\n%s\n\nis authorized for the API Scope(s):\n\n%s\n\nThis can be configured in your Control Panel under:\n\nSecurity -->\nAdvanced Settings -->\nManage third party OAuth Client access' % (SERVICE_ACCOUNT_CLIENT_ID, ','.join(scope))
       sys.exit(5)
     else:
       print u'Error: %s' % e
+      if soft_errors:
+        return False
       sys.exit(4)
 
 def buildDiscoveryObject(api):
@@ -647,10 +638,10 @@ def buildDiscoveryObject(api):
   if not os.path.isfile(getGamPath()+u'nocache.txt'):
     cache = u'%sgamcache' % getGamPath()
   http = httplib2.Http(ca_certs=getGamPath()+u'cacert.pem', disable_ssl_certificate_validation=disable_ssl_certificate_validation, cache=cache)
-  requested_url = uritemplate.expand(apiclient.discovery.DISCOVERY_URI, params)
+  requested_url = uritemplate.expand(googleapiclient.discovery.DISCOVERY_URI, params)
   resp, content = http.request(requested_url)
   if resp.status == 404:
-    raise apiclient.errors.UnknownApiNameOrVersion("name: %s  version: %s" % (api, version))
+    raise googleapiclient.errors.UnknownApiNameOrVersion("name: %s  version: %s" % (api, version))
   if resp.status >= 400:
     raise HttpError(resp, content, uri=requested_url)
   try:
@@ -770,7 +761,7 @@ def showReport():
         page_message = u'Got %%num_items%% users\n'
         usage = callGAPIpages(service=rep.userUsageReport(), function=u'get', items=u'usageReports', page_message=page_message, throw_reasons=[u'invalid'], date=str(try_date), userKey=userKey, customerId=customerId, filters=filters, parameters=parameters)
         break
-      except apiclient.errors.HttpError, e:
+      except googleapiclient.errors.HttpError, e:
         error = json.loads(e.content)
       try:
         message = error[u'error'][u'errors'][0][u'message']
@@ -807,7 +798,7 @@ def showReport():
       try:
         usage = callGAPIpages(service=rep.customerUsageReports(), function=u'get', items=u'usageReports', throw_reasons=[u'invalid'], customerId=customerId, date=str(try_date), parameters=parameters)
         break
-      except apiclient.errors.HttpError, e:
+      except googleapiclient.errors.HttpError, e:
         error = json.loads(e.content)
       try:
         message = error[u'error'][u'errors'][0][u'message']
@@ -843,11 +834,13 @@ def showReport():
     for app in auth_apps: # put apps at bottom
       cust_attributes.append(app)
     output_csv(csv_list=cust_attributes, titles=titles, list_type=u'Customer Report - %s' % try_date, todrive=to_drive)
-  elif report in [u'doc', u'docs', u'login', u'logins', u'admin', u'drive']:
+  elif report in [u'doc', u'docs', u'login', u'logins', u'admin', u'drive', u'token', u'tokens']:
     if report == u'doc':
       report = u'docs'
     elif report == u'logins':
       report = u'login'
+    elif report == u'tokens':
+      report = u'token'
     page_message = u'Got %%num_items%% items\n'
     activities = callGAPIpages(service=rep.activities(), function=u'list', page_message=page_message, applicationName=report, userKey=userKey, customerId=customerId, actorIpAddress=actorIpAddress, startTime=startTime, endTime=endTime, eventName=eventName, filters=filters)
     if len(activities) > 0:
@@ -1515,7 +1508,7 @@ def doPhoto(users):
       import urllib2
       try:
         f = urllib2.urlopen(filename)
-        image_data = f.read()
+        image_data = str(f.read())
       except urllib2.HTTPError, e:
         print e
         continue
@@ -1545,11 +1538,12 @@ def getPhoto(users):
     i += 1
     try:
       photo = callGAPI(service=cd.users().photos(), function=u'get', throw_reasons=[u'notFound'], userKey=user)
-    except apiclient.errors.HttpError:
+    except googleapiclient.errors.HttpError:
       print u' no photo for %s' % user
       continue
     try:
-      photo_data = photo[u'photoData']
+      photo_data = str(photo[u'photoData'])
+      print photo_data
       photo_data = base64.urlsafe_b64decode(photo_data)
     except KeyError:
       print u' no photo for %s' % user
@@ -1676,9 +1670,11 @@ def doDriveActivity(users):
   for user in users:
     activity = buildGAPIServiceObject(u'appsactivity', user)
     page_message = u'Retrieved %%%%total_items%%%% activities for %s' % user
-    feed = callGAPIpages(service=activity.activities(), function=u'list', items=u'activities', page_message=page_message, source=u'drive.google.com', userId=u'me', drive_ancestorId=drive_ancestorId, pageSize=100)
+    feed = callGAPIpages(service=activity.activities(), function=u'list', items=u'activities',
+                         page_message=page_message, source=u'drive.google.com', userId=u'me',
+                         drive_ancestorId=drive_ancestorId, groupingStrategy=u'none', pageSize=500)
     for item in feed:
-      activity_attributes.append(flatten_json(item))
+      activity_attributes.append(flatten_json(item)[u'combinedEvent'])
       for an_item in activity_attributes[-1].keys():
         if an_item not in activity_attributes[0]:
           activity_attributes[0][an_item] = an_item
@@ -2130,7 +2126,7 @@ def doUpdateDriveFile(users):
     if drivefilename:
       fileIds = doDriveSearch(drive, query=u'"me" in owners and title = "%s"' % drivefilename)
     if local_filepath:
-      media_body = apiclient.http.MediaFileUpload(local_filepath, mimetype=mimetype, resumable=True)
+      media_body = googleapiclient.http.MediaFileUpload(local_filepath, mimetype=mimetype, resumable=True)
     for fileId in fileIds:
       if operation == u'update':
         if media_body:
@@ -2245,7 +2241,7 @@ def createDriveFile(users):
       for a_parent in more_parents:
         body[u'parents'].append({u'id': a_parent})
     if local_filepath:
-      media_body = apiclient.http.MediaFileUpload(local_filepath, mimetype=mimetype, resumable=True)
+      media_body = googleapiclient.http.MediaFileUpload(local_filepath, mimetype=mimetype, resumable=True)
     result = callGAPI(service=drive.files(), function=u'insert', convert=convert, ocr=ocr, ocrLanguage=ocrLanguage, media_body=media_body, body=body, fields='id')
     try:
       print u'Successfully uploaded %s to Drive file ID %s' % (local_filename, result[u'id'])
@@ -2888,14 +2884,14 @@ def doDeleteLabel(users):
         continue
     del_me_count = len(del_labels)
     i = 1
-    dbatch = apiclient.http.BatchHttpRequest()
+    dbatch = googleapiclient.http.BatchHttpRequest()
     for del_me in del_labels:
       print u' deleting label %s (%s/%s)' % (del_me[u'name'], i, del_me_count)
       i += 1
       dbatch.add(gmail.users().labels().delete(userId=user, id=del_me[u'id']), callback=label_del_result)
       if len(dbatch._order) == 25:
         dbatch.execute()
-        dbatch = apiclient.http.BatchHttpRequest()
+        dbatch = googleapiclient.http.BatchHttpRequest()
     if len(dbatch._order) > 0:
       dbatch.execute()
 
@@ -2925,6 +2921,29 @@ def showLabels(users):
           continue
         print u' %s: %s' % (a_key, label[a_key])
       print u''
+
+def showGmailProfile(users):
+  todrive = False
+  i = 6
+  while i < len(sys.argv):
+    if sys.argv[i].lower() == u'todrive':
+      todrive = True
+      i += 1
+    else:
+      print u'Error %s is not a valid argument for gam ... show gmailprofiles.'
+      sys.exit(1)
+  profiles = [{}]
+  for user in users:
+    print 'Getting Gmail profile for %s' % user
+    gmail = buildGAPIServiceObject(u'gmail', act_as=user, soft_errors=True)
+    if not gmail:
+      continue
+    results = callGAPI(service=gmail.users(), function=u'getProfile', userId=u'me', soft_errors=True)
+    for item in results.keys():
+      if item not in profiles[0]:
+        profiles[0][item] = item
+    profiles.append(results)
+  output_csv(csv_list=profiles, titles=profiles[0], list_type=u'Gmail Profiles', todrive=todrive)
 
 def updateLabels(users):
   label_name = sys.argv[5]
@@ -2986,17 +3005,8 @@ def renameLabels(users):
   for user in users:
     gmail = buildGAPIServiceObject(u'gmail', act_as=user)
     labels = callGAPI(service=gmail.users().labels(), function=u'list', userId=user)
-    already_renamed_parents = list()
     for label in labels[u'labels']:
       if label[u'type'] == u'system':
-        continue
-      already_renamed_child = False
-      for already_renamed_parent in already_renamed_parents:
-        parent_length = len(already_renamed_parent)
-        if label[u'name'][:parent_length+1] == '%s/' % already_renamed_parent:
-          already_renamed_child = True
-          break
-      if already_renamed_child:
         continue
       match_result = re.search(pattern, label[u'name'])
       if match_result != None:
@@ -3004,28 +3014,28 @@ def renameLabels(users):
         print u' Renaming "%s" to "%s"' % (label[u'name'], new_label_name)
         try:
           callGAPI(service=gmail.users().labels(), function=u'patch', soft_errors=True, throw_reasons=[u'aborted'], id=label[u'id'], userId=user, body={u'name': new_label_name})
-        except apiclient.errors.HttpError:
+        except googleapiclient.errors.HttpError:
           if merge:
             print u'  Merging %s label to existing %s label' % (label[u'name'], new_label_name)
             q = u'label:"%s"' % label[u'name']
-            print q
             messages_to_relabel = callGAPIpages(service=gmail.users().messages(), function=u'list', items=u'messages', userId=user, q=q)
-            for new_label in labels[u'labels']:
-              if new_label[u'name'].lower() == new_label_name.lower():
-                new_label_id = new_label[u'id']
-                body = {u'addLabelIds': [new_label_id]}
-                break
-            i = 1
-            for message_to_relabel in messages_to_relabel:
-              print u'    relabeling message %s (%s/%s)' % (message_to_relabel[u'id'], i, len(messages_to_relabel))
-              callGAPI(service=gmail.users().messages(), function=u'modify', userId=user, id=message_to_relabel[u'id'], body=body)
-              i += 1
+            if len(messages_to_relabel) > 0:
+              for new_label in labels[u'labels']:
+                if new_label[u'name'].lower() == new_label_name.lower():
+                  new_label_id = new_label[u'id']
+                  body = {u'addLabelIds': [new_label_id]}
+                  break
+              i = 1
+              for message_to_relabel in messages_to_relabel:
+                print u'    relabeling message %s (%s/%s)' % (message_to_relabel[u'id'], i, len(messages_to_relabel))
+                callGAPI(service=gmail.users().messages(), function=u'modify', userId=user, id=message_to_relabel[u'id'], body=body)
+                i += 1
+            else:
+              print u'   no messages with %s label' % label[u'name']
             print u'   Deleting label %s' % label[u'name']
             callGAPI(service=gmail.users().labels(), function=u'delete', id=label[u'id'], userId=user)
           else:
             print u'  Error: looks like %s already exists, not renaming. Use the "merge" argument to merge the labels' % new_label_name
-        continue
-        already_renamed_parents.append(label)
 
 def doFilter(users):
   i = 4 # filter arguments start here
@@ -3837,7 +3847,7 @@ def doCreateAlias():
   elif target_type == u'target':
     try:
       callGAPI(service=cd.users().aliases(), function=u'insert', throw_reasons=[u'invalid'], userKey=targetKey, body=body)
-    except apiclient.errors.HttpError:
+    except googleapiclient.errors.HttpError:
       callGAPI(service=cd.groups().aliases(), function=u'insert', groupKey=targetKey, body=body)
 
 def doCreateOrg():
@@ -4299,7 +4309,7 @@ def doUpdateGroup():
       if role not in [u'OWNER', u'MANAGER', u'MEMBER']:
         role = u'MEMBER'
         i = 5
-      if sys.argv[i].lower() in [u'user', u'users', u'group', u'ou', u'org', u'query', u'file', u'all']:
+      if sys.argv[i].lower() in usergroup_types:
         users_email = getUsersToModify(entity_type=sys.argv[i], entity=sys.argv[i+1])
       else:
         users_email = [sys.argv[i],]
@@ -4321,7 +4331,7 @@ def doUpdateGroup():
               print u'added %s to group' % result[u'email']
           except TypeError:
             pass
-        except apiclient.errors.HttpError:
+        except googleapiclient.errors.HttpError:
           pass
     elif sys.argv[4].lower() == u'sync':
       role = sys.argv[5].upper()
@@ -4339,7 +4349,7 @@ def doUpdateGroup():
         sys.stderr.write(u' adding %s %s\n' % (role, user_email))
         try:
           result = callGAPI(service=cd.members(), function=u'insert', soft_errors=True, throw_reasons=[u'duplicate'], groupKey=group, body={u'email': user_email, u'role': role})
-        except apiclient.errors.HttpError:
+        except googleapiclient.errors.HttpError:
           result = callGAPI(service=cd.members(), function=u'update', soft_errors=True, groupKey=group, memberKey=user_email, body={u'email': user_email, u'role': role})
       for user_email in to_remove:
         sys.stderr.write(u' removing %s\n' % user_email)
@@ -4348,7 +4358,7 @@ def doUpdateGroup():
       i = 5
       if sys.argv[i].lower() in [u'member', u'manager', u'owner']:
         i += 1
-      if sys.argv[i].lower() in [u'user', u'users', u'group', u'ou', u'org', u'query', u'file', u'all']:
+      if sys.argv[i].lower() in usergroup_types:
         user_emails = getUsersToModify(entity_type=sys.argv[i], entity=sys.argv[i+1])
       else:
         user_emails = [sys.argv[i],]
@@ -4446,7 +4456,7 @@ def doUpdateAlias():
     target_email = u'%s@%s' % (target_email, domain)
   try:
     callGAPI(service=cd.users().aliases(), function=u'delete', throw_reasons=[u'invalid'], userKey=alias, alias=alias)
-  except apiclient.errors.HttpError:
+  except googleapiclient.errors.HttpError:
     callGAPI(service=cd.groups().aliases(), function=u'delete', groupKey=alias, alias=alias)
   if target_type == u'user':
     callGAPI(service=cd.users().aliases(), function=u'insert', userKey=target_email, body={u'alias': alias})
@@ -4455,7 +4465,7 @@ def doUpdateAlias():
   elif target_type == u'target':
     try:
       callGAPI(service=cd.users().aliases(), function=u'insert', throw_reasons=[u'invalid'], userKey=target_email, body={u'alias': alias})
-    except apiclient.errors.HttpError:
+    except googleapiclient.errors.HttpError:
       callGAPI(service=cd.groups().aliases(), function=u'insert', groupKey=target_email, body={u'alias': alias})
   print u'updated alias %s' % alias
 
@@ -4534,8 +4544,10 @@ def doUpdateMobile():
       action_body[u'action'] = sys.argv[i+1].lower()
       if action_body[u'action'] == u'wipe':
         action_body[u'action'] = u'admin_remote_wipe'
-      if action_body[u'action'] not in [u'admin_remote_wipe', u'approve', u'block', u'cancel_remote_wipe_then_activate', u'cancel_remote_wipe_then_block']:
-        print u'Error: action must be wipe, approve, block, cancel_remote_wipe_then_activate or cancel_remote_wipe_then_block. Got %s' % action_body[u'action']
+      elif action_body[u'action'].replace(u'_', '') in [u'accountwipe', u'wipeaccount']:
+        action_body[u'action'] = u'admin_account_wipe'
+      if action_body[u'action'] not in [u'admin_remote_wipe', u'admin_account_wipe', u'approve', u'block', u'cancel_remote_wipe_then_activate', u'cancel_remote_wipe_then_block']:
+        print u'Error: action must be wipe, wipeaccount, approve, block, cancel_remote_wipe_then_activate or cancel_remote_wipe_then_block. Got %s' % action_body[u'action']
         sys.exit(5)
       doAction = True
       i += 2
@@ -4568,7 +4580,7 @@ def doUpdateOrg():
   orgUnitPath = sys.argv[3]
   cd = buildGAPIObject(u'directory')
   if sys.argv[4].lower() in [u'move', u'add']:
-    if sys.argv[5].lower() in [u'user', u'users', u'cros', u'group', u'ou', u'org', u'query', u'file', u'all']:
+    if sys.argv[5].lower() in usergroup_types:
       users = getUsersToModify(entity_type=sys.argv[5], entity=sys.argv[6])
     else:
       users = getUsersToModify(entity_type=u'user', entity=sys.argv[5])
@@ -4588,7 +4600,7 @@ def doUpdateOrg():
         sys.stderr.write(u' moving %s to %s (%s/%s)\n' % (user, orgUnitPath, current_user, user_count))
         try:
           callGAPI(service=cd.users(), function=u'patch', throw_reasons=[u'conditionNotMet'], userKey=user, body={u'orgUnitPath': orgUnitPath})
-        except apiclient.errors.HttpError:
+        except googleapiclient.errors.HttpError:
           pass
         current_user += 1
   else:
@@ -4631,12 +4643,12 @@ def doWhatIs():
       sys.stderr.write(u'%s is a user alias\n\n' % email)
       doGetAliasInfo(alias_email=email)
       return
-  except apiclient.errors.HttpError:
+  except googleapiclient.errors.HttpError:
     sys.stderr.write(u'%s is not a user...\n' % email)
     sys.stderr.write(u'%s is not a user alias...\n' % email)
   try:
     group = callGAPI(service=cd.groups(), function=u'get', throw_reasons=[u'notFound', u'badRequest'], groupKey=email, fields=u'email')
-  except apiclient.errors.HttpError:
+  except googleapiclient.errors.HttpError:
     sys.stderr.write(u'%s is not a group either!\n\nDoesn\'t seem to exist!\n\n' % email)
     sys.exit(1)
   if group[u'email'].lower() == email.lower():
@@ -4819,10 +4831,10 @@ def doGetUserInfo(user_email=None):
       for alias in user[u'nonEditableAliases']:
         print u'  %s' % alias
   if getGroups:
-    groups = callGAPI(service=cd.groups(), function=u'list', userKey=user_email)
-    if u'groups' in groups:
-      print u'Groups:'
-      for group in groups[u'groups']:
+    groups = callGAPIpages(service=cd.groups(), function=u'list', items=u'groups', userKey=user_email, fields=u'groups(name,email),nextPageToken')
+    if len(groups) > 0:
+      print u'Groups: (%s)' % len(groups)
+      for group in groups:
         print u'   %s <%s>' % (group[u'name'], group[u'email'])
   if getLicenses:
     print u'Licenses:'
@@ -4835,7 +4847,7 @@ def doGetUserInfo(user_email=None):
       productId, skuId = getProductAndSKU(sku)
       try:
         result = callGAPI(service=lic.licenseAssignments(), function=u'get', throw_reasons=['notFound'], userId=user_email,  productId=productId, skuId=skuId)
-      except apiclient.errors.HttpError:
+      except googleapiclient.errors.HttpError:
         continue
       print u' %s' % result[u'skuId']
 
@@ -4857,7 +4869,7 @@ def doGetGroupInfo(group_name=None):
   basic_info = callGAPI(service=cd.groups(), function=u'get', groupKey=group_name)
   try:
     settings = callGAPI(service=gs.groups(), function=u'get', retry_reasons=[u'serviceLimit'], groupUniqueId=basic_info[u'email'], throw_reasons=u'authError') # Use email address retrieved from cd since GS API doesn't support uid
-  except apiclient.errors.HttpError:
+  except googleapiclient.errors.HttpError:
     pass
   print u''
   print u'Group Settings:'
@@ -4903,7 +4915,7 @@ def doGetAliasInfo(alias_email=None):
     alias_email = u'%s@%s' % (alias_email, domain)
   try:
     result = callGAPI(service=cd.users(), function=u'get', throw_reasons=[u'invalid', u'badRequest'], userKey=alias_email)
-  except apiclient.errors.HttpError:
+  except googleapiclient.errors.HttpError:
     result = callGAPI(service=cd.groups(), function=u'get', groupKey=alias_email)
   print u' Alias Email: %s' % alias_email
   try:
@@ -4935,21 +4947,34 @@ def doGetCrosInfo():
   deviceId = sys.argv[3]
   cd = buildGAPIObject(u'directory')
   info = callGAPI(service=cd.chromeosdevices(), function=u'get', customerId=customerId, deviceId=deviceId)
-  for key, value in info.items():
-    if key in [u'kind', u'etag']:
-      continue
-    print u' %s: %s' % (key, value)
+  print_json(None, info)
 
 def doGetMobileInfo():
   deviceId = sys.argv[3]
   cd = buildGAPIObject(u'directory')
   info = callGAPI(service=cd.mobiledevices(), function=u'get', customerId=customerId, resourceId=deviceId)
-  for key, value in info.items():
-    if key == u'kind':
-      continue
-    if key in [u'name', u'email']:
-      value = value[0]
-    print u' %s: %s' % (key, value)
+  print_json(None, info)
+
+def print_json(object_name, object_value, spacing=u''):
+  if object_name in [u'kind', u'etag', u'etags']:
+    return
+  if object_name != None:
+    sys.stdout.write(u'%s%s: ' % (spacing, object_name))
+  if type(object_value) is list:
+    if len(object_value) == 1:
+      sys.stdout.write(u'%s\n' % object_value[0])
+      return
+    sys.stdout.write(u'\n')
+    for a_value in object_value:
+      if type(a_value) in (str, unicode):
+        print u' %s%s' % (spacing, a_value)
+      else:
+        print_json(object_name=None, object_value=a_value, spacing=u' %s' % spacing)
+  elif type(object_value) is dict:
+    for another_object in object_value.keys():
+      print_json(object_name=another_object, object_value=object_value[another_object], spacing=spacing)
+  else:
+    sys.stdout.write(u'%s\n' % (object_value))
 
 def doUpdateNotification():
   cd = buildGAPIObject(u'directory')
@@ -5075,7 +5100,7 @@ def doSiteVerifyAttempt():
   body = {u'site':{u'type':verify_type, u'identifier':identifier}, u'verificationMethod':verificationMethod}
   try:
     verify_result = callGAPI(service=verif.webResource(), function=u'insert', throw_reasons=[u'badRequest'], verificationMethod=verificationMethod, body=body)
-  except apiclient.errors.HttpError, e:
+  except googleapiclient.errors.HttpError, e:
     error = json.loads(e.content)
     message = error[u'error'][u'errors'][0][u'message']
     print u'ERROR: %s' % message
@@ -5232,7 +5257,7 @@ def doGetBackupCodes(users):
   for user in users:
     try:
       codes = callGAPI(service=cd.verificationCodes(), function=u'list', throw_reasons=[u'invalidArgument', u'invalid'], userKey=user)
-    except apiclient.errors.HttpError:
+    except googleapiclient.errors.HttpError:
       codes = dict()
       codes[u'items'] = list()
     print u'Backup verification codes for %s' % user
@@ -5271,7 +5296,7 @@ def doDelBackupCodes(users):
   for user in users:
     try:
       codes = callGAPI(service=cd.verificationCodes(), function=u'invalidate', soft_errors=True, throw_reasons=[u'invalid',], userKey=user)
-    except apiclient.errors.HttpError:
+    except googleapiclient.errors.HttpError:
       print u'No 2SV backup codes for %s' % user
       continue
     print u'2SV backup codes for %s invalidated' % user
@@ -5297,7 +5322,7 @@ def doGetTokens(users):
     for user in users:
       try:
         token = callGAPI(service=cd.tokens(), function=u'get', throw_reasons=[u'notFound',], userKey=user, clientId=clientId, fields=u'clientId')
-      except apiclient.errors.HttpError:
+      except googleapiclient.errors.HttpError:
         continue
       print u'%s has allowed this token' % user
     return
@@ -5314,7 +5339,7 @@ def doGetTokens(users):
             print u' %s:' % item
             for it in token[item]:
               print u'  %s' % it
-          if type(token[item]) is unicode:
+          if type(token[item]) in (unicode, bool):
             try:
               print u' %s: %s' % (item, token[item])
             except UnicodeEncodeError:
@@ -5348,7 +5373,7 @@ def doDeprovUser(users):
     print u'Invalidating 2SV Backup Codes for %s' % user
     try:
       codes = callGAPI(service=cd.verificationCodes(), function=u'invalidate', soft_errors=True, throw_reasons=[u'invalid'], userKey=user)
-    except apiclient.errors.HttpError:
+    except googleapiclient.errors.HttpError:
       print u'No 2SV Backup Codes'
     print u'Getting tokens for %s...' % user
     tokens = callGAPI(service=cd.tokens(), function=u'list', userKey=user, fields=u'items/clientId')
@@ -5682,7 +5707,7 @@ def doDeleteAlias(alias_email=None):
     try:
       callGAPI(service=cd.users().aliases(), function=u'delete', throw_reasons=[u'invalid', u'badRequest', u'notFound'], userKey=alias_email, alias=alias_email)
       return
-    except apiclient.errors.HttpError, e:
+    except googleapiclient.errors.HttpError, e:
       error = json.loads(e.content)
       reason = error[u'error'][u'errors'][0][u'reason']
       if reason == u'notFound':
@@ -5724,7 +5749,7 @@ def output_csv(csv_list, titles, list_type, todrive):
       convert = False
     drive = buildGAPIObject(u'drive')
     string_data = string_file.getvalue()
-    media = apiclient.http.MediaInMemoryUpload(string_data, mimetype=u'text/csv')
+    media = googleapiclient.http.MediaInMemoryUpload(string_data, mimetype=u'text/csv')
     result = callGAPI(service=drive.files(), function=u'insert', convert=convert, body={u'description': u' '.join(sys.argv), u'title': u'%s - %s' % (domain, list_type), u'mimeType': u'text/csv'}, media_body=media)
     file_url = result[u'alternateLink']
     if os.path.isfile(getGamPath()+u'nobrowser.txt'):
@@ -5816,6 +5841,9 @@ def doPrintUsers():
     elif sys.argv[i].lower() == u'suspended':
       user_fields.append(u'suspended')
       user_fields.append(u'suspensionReason')
+      i += 1
+    elif sys.argv[i].lower() == u'ismailboxsetup':
+      user_fields.append(u'isMailboxSetup')
       i += 1
     elif sys.argv[i].lower() == u'changepassword':
       user_fields.append(u'changePasswordAtNextLogin')
@@ -6360,10 +6388,9 @@ def doPrintCrosDevices():
     cros_attributes.append(crosdevice)
   output_csv(cros_attributes, titles, 'CrOS', todrive)
 
-def doPrintLicenses(return_list=False):
+def doPrintLicenses(return_list=False, skus=None):
   lic = buildGAPIObject(u'licensing')
   products = [u'Google-Apps', u'Google-Drive-storage', u'Google-Coordinate', u'Google-Vault']
-  skus = None
   licenses = []
   lic_attributes = [{}]
   todrive = False
@@ -6387,14 +6414,14 @@ def doPrintLicenses(return_list=False):
       page_message = u'Got %%%%total_items%%%% Licenses for %s...\n' % sku
       try:
         licenses += callGAPIpages(service=lic.licenseAssignments(), function=u'listForProductAndSku', throw_reasons=[u'invalid', u'forbidden'], page_message=page_message, customerId=domain, productId=product, skuId=sku, fields=u'items(productId,skuId,userId),nextPageToken')
-      except apiclient.errors.HttpError:
+      except googleapiclient.errors.HttpError:
         licenses += []
   else:
     for productId in products:
       page_message = u'Got %%%%total_items%%%% Licenses for %s...\n' % productId
       try:
         licenses += callGAPIpages(service=lic.licenseAssignments(), function=u'listForProduct', throw_reasons=[u'invalid', u'forbidden'], page_message=page_message, customerId=domain, productId=productId, fields=u'items(productId,skuId,userId),nextPageToken')
-      except apiclient.errors.HttpError:
+      except googleapiclient.errors.HttpError:
         licenses = +[]
   for license in licenses:
     a_license = dict()
@@ -6418,7 +6445,7 @@ def doPrintTokens():
     if sys.argv[i].lower() == u'todrive':
       todrive = True
       i += 1
-    elif sys.argv[i].lower() in [u'user', u'users', u'group', u'ou', u'org', u'query', u'file', u'all']:
+    elif sys.argv[i].lower() in usergroup_types:
       entity_type = sys.argv[i].lower()
       entity = sys.argv[i+1].lower()
       i += 2
@@ -6936,6 +6963,14 @@ def getUsersToModify(entity_type=None, entity=None, silent=False, return_uids=Fa
       else:
         users.append(member[u'primaryEmail'])
     if not silent: sys.stderr.write(u"done.\r\n")
+  elif entity_type in [u'license', u'licenses']:
+    users = []
+    licenses = doPrintLicenses(return_list=True, skus=entity.split(u','))
+    for row in licenses[1:]: # skip header
+      try:
+        users.append(row[u'userId'])
+      except KeyError:
+        pass
   elif entity_type == u'file':
     users = []
     filename = entity
@@ -7075,12 +7110,6 @@ class cmd_flags(object):
     self.auth_host_port = [8080, 9090]
 
 def doRequestOAuth(incremental_auth=False):
-  if not os.path.isfile(getGamPath()+u'nodito.txt'):
-    print u"\n\nGAM is made possible and maintained by the work of Dito. Who is Dito?\n\nDito is solely focused on moving organizations to Google's cloud.  After hundreds of successful deployments over the last 5 years, we have gained notoriety for our complete understanding of the platform, our change management & training ability, and our rock-star deployment engineers.  We are known worldwide as the Google Apps Experts.\n"
-    visit_dito = raw_input(u"Want to learn more about Dito? Hit Y to visit our website (you can switch back to this window when you're done). Hit Enter to continue without visiting Dito: ")
-    if visit_dito.lower() == u'y':
-      import webbrowser
-      webbrowser.open(u'http://www.ditoweb.com?s=gam')
   CLIENT_SECRETS = getGamPath()+u'client_secrets.json'
   MISSING_CLIENT_SECRETS_MESSAGE = u"""
 WARNING: Please configure OAuth 2.0
@@ -7092,7 +7121,10 @@ found at:
 
 with information from the APIs Console <https://cloud.google.com/console>.
 
-See https://code.google.com/p/google-apps-manager/wiki/CreatingClientSecretsFile
+See:
+
+https://github.com/jay0lee/GAM/wiki/CreatingClientSecretsFile
+ 
 for instructions.
 
 """ % CLIENT_SECRETS
@@ -7285,7 +7317,7 @@ try:
       argv = shlex.split(line)
       if argv[0] in [u'#', u' ', u''] or len(argv) < 2:
         continue
-      elif argv.pop(0).lower() != u'gam':
+      elif argv.pop(0).lower() not in [u'gam', u'commit-batch']:
         print u'Error: "%s" is not a valid gam command' % line
         continue
       items.append(python_cmd+argv)
@@ -7571,6 +7603,8 @@ try:
       showDriveFileInfo(users)
     elif readWhat == u'sendas':
       showSendAs(users)
+    elif readWhat == u'gmailprofile':
+      showGmailProfile(users)
     elif readWhat in [u'sig', u'signature']:
       getSignature(users)
     elif readWhat == u'forward':
