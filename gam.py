@@ -24,7 +24,7 @@ For more information, see http://git.io/gam
 """
 
 __author__ = u'Jay Lee <jay0lee@gmail.com>'
-__version__ = u'3.42'
+__version__ = u'3.43'
 __license__ = u'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 
 import sys, os, time, datetime, random, socket, csv, platform, re, calendar, base64, hashlib, string
@@ -1308,7 +1308,7 @@ def doCalendarAddACL(calendarId=None, act_as=None, role=None, scope=None, entity
   if body[u'scope'][u'type'] == u'domain':
     try:
       body[u'scope'][u'value'] = sys.argv[6].lower()
-    except KeyError:
+    except IndexError:
       body[u'scope'][u'value'] = domain
   callGAPI(service=cal.acl(), function=u'insert', calendarId=calendarId, body=body)
 
@@ -1324,7 +1324,7 @@ def doCalendarUpdateACL():
 
 def doCalendarDelACL():
   calendarId = sys.argv[2]
-  entity = sys.argv[4].lower()
+  entity = sys.argv[5].lower()
   scope = u'user'
   if entity == u'domain':
     scope = u'domain'
