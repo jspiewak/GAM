@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 #
-# Dito GAM 
+# GAM 
 #
-# Copyright 2013 Dito, LLC All Rights Reserved.
+# Copyright 2015, LLC All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-u"""Dito GAM is a command line tool which allows Administrators to control their Google Apps domain and accounts.
+u"""GAM is a command line tool which allows Administrators to control their Google Apps domain and accounts.
 
 With GAM you can programatically create users, turn on/off services for users like POP and Forwarding and much more.
 For more information, see http://git.io/gam
@@ -24,7 +24,7 @@ For more information, see http://git.io/gam
 """
 
 __author__ = u'Jay Lee <jay0lee@gmail.com>'
-__version__ = u'3.43'
+__version__ = u'3.45'
 __license__ = u'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 
 import sys, os, time, datetime, random, socket, csv, platform, re, calendar, base64, hashlib, string
@@ -40,7 +40,9 @@ import oauth2client.file
 import oauth2client.tools
 import uritemplate
 
-global true_values, false_values, prettyPrint, customerId, domain, usergroup_types
+global true_values, false_values, extra_args, customerId, domain, usergroup_types, is_frozen
+is_frozen = getattr(sys, 'frozen', '')
+extra_args = {u'prettyPrint': False}
 true_values = [u'on', u'yes', u'enabled', u'true', u'1']
 false_values = [u'off', u'no', u'disabled', u'false', u'0']
 usergroup_types = [u'user', u'users', u'group', u'ou', u'org',
@@ -126,7 +128,7 @@ def showUsage():
   print u'''
 Usage: gam [OPTIONS]...
 
-Dito GAM. Retrieve or set Google Apps domain,
+GAM. Retrieve or set Google Apps domain,
 user, group and alias settings. Exhaustive list of commands
 can be found at: https://github.com/jay0lee/GAM/wiki 
 
@@ -140,9 +142,6 @@ gam.exe update group announcements add member jsmith
 '''
 
 def getGamPath():
-  is_frozen = getattr(sys, 'frozen', '')
-  if is_frozen == 'console_exe':
-    return os.path.dirname(sys.executable)+'\\'
   if os.name == 'windows' or os.name == 'nt':
     divider = '\\'
   else:
@@ -151,7 +150,7 @@ def getGamPath():
 
 def doGAMVersion():
   import struct
-  print u'Dito GAM %s - http://git.io/gam\n%s\nPython %s.%s.%s %s-bit %s\ngoogle-api-python-client %s\n%s %s\nPath: %s' % (__version__, __author__,
+  print u'GAM %s - http://git.io/gam\n%s\nPython %s.%s.%s %s-bit %s\ngoogle-api-python-client %s\n%s %s\nPath: %s' % (__version__, __author__,
                    sys.version_info[0], sys.version_info[1], sys.version_info[2], struct.calcsize('P')*8, sys.version_info[3], googleapiclient.__version__,
                    platform.platform(), platform.machine(), getGamPath())
 
@@ -201,7 +200,7 @@ def doGAMCheckForUpdates():
 
 def commonAppsObjInit(appsObj):
   #Identify GAM to Google's Servers
-  appsObj.source = u'Dito GAM %s - http://git.io/gam / %s / Python %s.%s.%s %s / %s %s /' % (__version__, __author__,
+  appsObj.source = u'GAM %s - http://git.io/gam / %s / Python %s.%s.%s %s / %s %s /' % (__version__, __author__,
                    sys.version_info[0], sys.version_info[1], sys.version_info[2], sys.version_info[3],
                    platform.platform(), platform.machine())
   #Show debugging output if debug.gam exists
@@ -369,9 +368,10 @@ def callGData(service, function, soft_errors=False, throw_errors=[], **kwargs):
 def callGAPI(service, function, silent_errors=False, soft_errors=False, throw_reasons=[], retry_reasons=[], **kwargs):
   method = getattr(service, function)
   retries = 10
+  parameters = dict(kwargs.items() + extra_args.items())
   for n in range(1, retries+1):
     try:
-      return method(prettyPrint=prettyPrint, **kwargs).execute()
+      return method(**parameters).execute()
     except googleapiclient.errors.HttpError, e:
       try:
         error = json.loads(e.content)
@@ -504,7 +504,7 @@ def getAPIScope(api):
             u'https://www.googleapis.com/auth/drive']
 
 def buildGAPIObject(api):
-  global domain, customerId, prettyPrint
+  global domain, customerId, extra_args
   oauth2file = getGamPath()+u'oauth2.txt'
   try:
     oauth2file = getGamPath()+os.environ[u'OAUTHFILE']
@@ -515,7 +515,7 @@ def buildGAPIObject(api):
   if credentials is None or credentials.invalid:
     doRequestOAuth()
     credentials = storage.get()
-  credentials.user_agent = u'Dito GAM %s - http://git.io/gam / %s / Python %s.%s.%s %s / %s %s /' % (__version__, __author__,
+  credentials.user_agent = u'GAM %s - http://git.io/gam / %s / Python %s.%s.%s %s / %s %s /' % (__version__, __author__,
                    sys.version_info[0], sys.version_info[1], sys.version_info[2], sys.version_info[3],
                    platform.platform(), platform.machine())
   disable_ssl_certificate_validation = False
@@ -527,9 +527,13 @@ def buildGAPIObject(api):
   http = httplib2.Http(ca_certs=getGamPath()+u'cacert.pem', disable_ssl_certificate_validation=disable_ssl_certificate_validation, cache=cache)
   if os.path.isfile(getGamPath()+u'debug.gam'):
     httplib2.debuglevel = 4
-    prettyPrint = True
-  else:
-    prettyPrint = False
+    extra_args[u'prettyPrint'] = True
+  if os.path.isfile(getGamPath()+u'extra-args.txt'):
+    import ConfigParser
+    config = ConfigParser.ConfigParser()
+    config.optionxform = str
+    config.read(getGamPath()+u'extra-args.txt')
+    extra_args.update(dict(config.items(u'extra-args')))
   http = credentials.authorize(http)
   version = getAPIVer(api)
   if api in [u'directory', u'reports']:
@@ -562,7 +566,7 @@ def buildGAPIObject(api):
   return service
 
 def buildGAPIServiceObject(api, act_as=None, soft_errors=False):
-  global prettyPrint
+  global extra_args
   oauth2servicefile = getGamPath()+u'oauth2service'
   try:
     oauth2servicefile = getGamPath()+os.environ[u'OAUTHSERVICEFILE']
@@ -594,7 +598,7 @@ def buildGAPIServiceObject(api, act_as=None, soft_errors=False):
     credentials = oauth2client.client.SignedJwtAssertionCredentials(SERVICE_ACCOUNT_EMAIL, key, scope=scope)
   else:
     credentials = oauth2client.client.SignedJwtAssertionCredentials(SERVICE_ACCOUNT_EMAIL, key, scope=scope, sub=act_as)
-  credentials.user_agent = u'Dito GAM %s - http://git.io/gam / %s / Python %s.%s.%s %s / %s %s /' % (__version__, __author__,
+  credentials.user_agent = u'GAM %s - http://git.io/gam / %s / Python %s.%s.%s %s / %s %s /' % (__version__, __author__,
                    sys.version_info[0], sys.version_info[1], sys.version_info[2], sys.version_info[3],
                    platform.platform(), platform.machine())
   disable_ssl_certificate_validation = False
@@ -606,9 +610,13 @@ def buildGAPIServiceObject(api, act_as=None, soft_errors=False):
   http = httplib2.Http(ca_certs=getGamPath()+u'cacert.pem', disable_ssl_certificate_validation=disable_ssl_certificate_validation, cache=cache)
   if os.path.isfile(getGamPath()+u'debug.gam'):
     httplib2.debuglevel = 4
-    prettyPrint = True
-  else:
-    prettyPrint = False
+    extra_args[u'prettyPrint'] = True
+  if os.path.isfile(getGamPath()+u'extra-args.txt'):
+    import ConfigParser
+    config = ConfigParser.ConfigParser()
+    config.optionxform = str
+    config.read(getGamPath()+u'extra-args.txt')
+    extra_args.update(dict(config.items(u'extra-args')))
   http = credentials.authorize(http)
   version = getAPIVer(api)
   try:
@@ -972,8 +980,8 @@ def doDelegates(users):
       doDeleteAlias(alias_email=use_delegate_address)
 
 def gen_sha512_hash(password):
-  from passlib.hash import sha512_crypt
-  return sha512_crypt.encrypt(password, rounds=500000)
+  from passlib.handlers.sha2_crypt import sha512_crypt
+  return sha512_crypt.encrypt(password, rounds=5000)
 
 def getDelegates(users):
   emailsettings = getEmailSettingsObject()
@@ -2530,11 +2538,11 @@ def getImap(users):
     i += 1
 
 def getProductAndSKU(sku):
-  if sku.lower() in [u'apps', 'gafb']:
+  if sku.lower() in [u'apps', u'gafb', u'gafw']:
     sku = u'Google-Apps-For-Business'
   elif sku.lower() in [u'gams',]:
     sku = u'Google-Apps-For-Postini'
-  elif sku.lower() in [u'gau', u'unlimited']:
+  elif sku.lower() in [u'gau', u'unlimited', u'd4w', u'dfw']:
     sku = u'Google-Apps-Unlimited'
   elif sku.lower() == u'coordinate':
     sku = u'Google-Coordinate'
@@ -4524,8 +4532,12 @@ def doUpdateCros():
       #  print 'Error: status must be active or deprovisioned, got %s' % body['status']
       #  sys.exit(3)
       i += 2
+    elif sys.argv[i].lower() in [u'tag', u'asset', u'assetid']:
+	  body[u'annotatedAssetId'] = sys.argv[i + 1]
+	  #annotatedAssetId - Handle Asset Tag Field 2015-04-13
+	  i += 2
     elif sys.argv[i].lower() in [u'ou', u'org']:
-      body[u'orgUnitPath'] = sys.argv[i+1]
+      body[u'orgUnitPath'] = sys.argv[i + 1]
       if body[u'orgUnitPath'][0] != '/':
         body[u'orgUnitPath'] = u'/%s' % body[u'orgUnitPath']
       i += 2
@@ -4967,7 +4979,7 @@ def print_json(object_name, object_value, spacing=u''):
   if object_name != None:
     sys.stdout.write(u'%s%s: ' % (spacing, object_name))
   if type(object_value) is list:
-    if len(object_value) == 1:
+    if len(object_value) == 1 and type(object_value[0]) in (str, unicode, int):
       sys.stdout.write(u'%s\n' % object_value[0])
       return
     sys.stdout.write(u'\n')
@@ -5198,26 +5210,14 @@ def doGetOrgInfo():
   except IndexError:
     pass
   if name == u'/':
-    print u"Organization Unit: /"
-    print u"Description: Root OU"
-    print u"Parent Org: <none>"
-    print u"Full Org Path: /"
-    print u"Block Inheritance: False"
-  else:
-    if len(name) > 1 and name[0] == u'/':
-      name = name[1:]
-    result = callGAPI(service=cd.orgunits(), function=u'get', customerId=customerId, orgUnitPath=name)
-    print u'Organization Unit: %s' % result[u'name']
-    try:
-      print u'Description: %s' % result[u'description']
-    except KeyError:
-      print u'Description: '
-    print u'Parent Org: %s' % result[u'parentOrgUnitPath']
-    print u'Full Org Path: %s' % result[u'orgUnitPath']
-    try:
-      print u'Block Inheritance: %s' % result[u'blockInheritance']
-    except KeyError:
-      print u'Block Inheritance: False'
+    orgs = callGAPI(service=cd.orgunits(), function=u'list',
+      customerId=customerId, type=u'children',
+      fields=u'organizationUnits/parentOrgUnitId')
+    name = orgs[u'organizationUnits'][0][u'parentOrgUnitId']
+  if len(name) > 1 and name[0] == u'/':
+    name = name[1:]
+  result = callGAPI(service=cd.orgunits(), function=u'get', customerId=customerId, orgUnitPath=name)
+  print_json(None, result)
   if get_users:
     if name != u'/':
       name = u'/%s' % name
@@ -6145,12 +6145,14 @@ def doPrintOrgs():
   printname = printdesc = printparent = printinherit = todrive = False
   type = u'all'
   orgUnitPath = u"/"
-  org_attributes = []
-  org_attributes.append({u'Path': u'Path'})
+  org_attributes = [{}]
   fields = u'organizationUnits(orgUnitPath)'
-  titles = [u'Path']
+  titles = []
   while i < len(sys.argv):
-    if sys.argv[i].lower() == u'name':
+    if sys.argv[i].lower() == u'allfields':
+      fields = None
+      i += 1
+    elif sys.argv[i].lower() == u'name':
       printname = True
       org_attributes[0].update(Name=u'Name')
       fields += u',organizationUnits(name)'
@@ -6186,6 +6188,9 @@ def doPrintOrgs():
     else:
       showUsage()
       exit(8)
+  if fields:
+    org_attributes[0][u'Path'] = u'Path'
+    titles.append(u'Path')
   cd = buildGAPIObject(u'directory')
   sys.stderr.write(u"Retrieving All Organizational Units for your account (may take some time on large domain)...")
   orgs = callGAPI(service=cd.orgunits(), function=u'list', customerId=customerId, fields=fields, type=type, orgUnitPath=orgUnitPath)
@@ -6195,30 +6200,37 @@ def doPrintOrgs():
     return
   for org_vals in orgs[u'organizationUnits']:
     orgUnit = {}
-    orgUnit.update({u'Path': org_vals[u'orgUnitPath']})
-    if printname:
-      name = org_vals[u'name']
-      if name == None:
-        name = u''
-      orgUnit.update({u'Name': name})
-    if printdesc:
-      try:
-        desc = org_vals[u'description']
-        if desc == None:
-          desc = u''
-      except KeyError:
-        pass
-      orgUnit.update({u'Description': desc})
-    if printparent:
-      parent = org_vals[u'parentOrgUnitPath']
-      if parent == None:
-        parent = ''
-      orgUnit.update({u'Parent': parent})
-    if printinherit:
-      try:
-        orgUnit.update({u'InheritanceBlocked': org_vals[u'blockInheritance']})
-      except KeyError:
-        pass
+    if not fields:
+      orgUnit = flatten_json(org_vals)
+      for row in orgUnit:
+        if row not in titles:
+          titles.append(row)
+          org_attributes[0][row] = row
+    else:
+      orgUnit.update({u'Path': org_vals[u'orgUnitPath']})
+      if printname:
+        name = org_vals[u'name']
+        if name == None:
+          name = u''
+        orgUnit.update({u'Name': name})
+      if printdesc:
+        try:
+          desc = org_vals[u'description']
+          if desc == None:
+            desc = u''
+        except KeyError:
+          pass
+        orgUnit.update({u'Description': desc})
+      if printparent:
+        parent = org_vals[u'parentOrgUnitPath']
+        if parent == None:
+          parent = ''
+        orgUnit.update({u'Parent': parent})
+      if printinherit:
+        try:
+          orgUnit.update({u'InheritanceBlocked': org_vals[u'blockInheritance']})
+        except KeyError:
+          pass
     org_attributes.append(orgUnit)
   output_csv(org_attributes, titles, u'Orgs', todrive)
 
@@ -6381,17 +6393,11 @@ def doPrintCrosDevices():
   page_message = u'Got %%num_items%% Chrome devices...\n'
   all_cros = callGAPIpages(service=cd.chromeosdevices(), function=u'list', items=u'chromeosdevices', page_message=page_message, query=query, customerId=customerId, sortOrder=sortOrder)
   for cros in all_cros:
-    crosdevice = dict()
-    for title in cros.keys():
-      if title in [u'kind', u'etag']:
-        continue
-      try:
-        cros_attributes[0][title]
-      except KeyError:
-        cros_attributes[0][title] = title
-        titles.append(title)
-      crosdevice[title] = cros[title]
-    cros_attributes.append(crosdevice)
+    cros_attributes.append(flatten_json(cros))
+    for item in cros_attributes[-1].keys():
+      if item not in titles:
+        titles.append(item)
+        cros_attributes[0][item] = item
   output_csv(cros_attributes, titles, 'CrOS', todrive)
 
 def doPrintLicenses(return_list=False, skus=None):
@@ -7046,7 +7052,7 @@ def OAuthInfo():
       domain = credentials.id_token[u'hd']
     except TypeError:
       domain = u'Unknown'
-    credentials.user_agent = u'Dito GAM %s - http://git.io/gam / %s / Python %s.%s.%s %s / %s %s /' % (__version__, __author__,
+    credentials.user_agent = u'GAM %s - http://git.io/gam / %s / Python %s.%s.%s %s / %s %s /' % (__version__, __author__,
                      sys.version_info[0], sys.version_info[1], sys.version_info[2],
                      sys.version_info[3], platform.platform(), platform.machine())
     disable_ssl_certificate_validation = False
@@ -7266,9 +7272,7 @@ access or an 'a' to grant action-only access.
     http = httplib2.Http(ca_certs=certFile, disable_ssl_certificate_validation=disable_ssl_certificate_validation)
     if os.path.isfile(getGamPath()+u'debug.gam'):
       httplib2.debuglevel = 4
-      prettyPrint = True
-    else:
-      prettyPrint = False
+      extra_args[u'prettyPrint'] = True
     try:
       credentials = oauth2client.tools.run_flow(flow=FLOW, storage=storage, flags=flags, http=http)
     except httplib2.CertificateValidationUnsupported:
@@ -7314,9 +7318,8 @@ try:
   if sys.argv[1].lower() == u'batch':
     import shlex, subprocess
     python_cmd = [sys.executable.lower(),]
-    is_frozen = getattr(sys, u'frozen', '')
-    if not is_frozen == u'console_exe':
-      python_cmd = [sys.executable.lower(), os.path.realpath(sys.argv[0])]
+    if not getattr(sys, 'frozen', False): # we're not frozen
+      python_cmd.append(os.path.realpath(sys.argv[0]))
     f = file(sys.argv[2], 'rb')
     items = list()
     for line in f:
@@ -7332,9 +7335,8 @@ try:
   elif sys.argv[1].lower() == 'csv':
     import subprocess
     python_cmd = [sys.executable.lower(),]
-    is_frozen = getattr(sys, u'frozen', '')
-    if not is_frozen == u'console_exe':
-      python_cmd = [sys.executable.lower(), os.path.realpath(sys.argv[0])]
+    if not getattr(sys, 'frozen', False): # we're not frozen
+      python_cmd.append(os.path.realpath(sys.argv[0]))
     csv_filename = sys.argv[2]
     if csv_filename == u'-':
       import StringIO
